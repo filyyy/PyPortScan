@@ -1,4 +1,4 @@
-import math, socket, sys, argparse
+import math, socket, sys, argparse, time
 from threading import Thread, Lock
 
 common_ports =  [20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 111, 123, 135, 137, 138, 139,
@@ -6,7 +6,10 @@ common_ports =  [20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 111, 123, 135, 137
                 1433, 1521, 1723, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 9000]
 
 open_ports = []
+response_times = []
 lock = Lock()
+
+start = time.time()
 
 def valid_ports(ports_list):
     valids = []
@@ -32,25 +35,29 @@ def valid_range(ports_range):
     return valids
 
 
-def threads_calc(length, bal=20, max_threads=100):
+def threads_calc(length, max_threads):
     return int(min(max(1, math.sqrt(length)), max_threads))
 
-def get_timeout(port):
-    if port in common_ports:
-        return 0.8
-    elif port < 1024:
-        return 1.2
-    else:
-        return 1.8
+def get_timeout():
+    if not response_times:
+        return 1.0
+    avg = sum(response_times)/len(response_times)
+    return max(0.5, min(avg*2.0, 3.0))
 
 def scan_range(ip, ports):
     for port in ports:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(get_timeout(port))
+            sock.settimeout(get_timeout())
+            start = time.time()
             if sock.connect_ex((ip, port)) == 0:
                 print(f"[{port}]", end=" ", flush=True)
                 with lock:
                     open_ports.append(port)
+            duration = time.time() - start
+            if duration <= 7.5:
+                with lock:
+                    response_times.append(duration)
+                    response_times[:] = response_times[-10:]
             sock.close()
 
 def port_scan(ip, ports=common_ports):
@@ -58,7 +65,7 @@ def port_scan(ip, ports=common_ports):
     ports = [port for port in ports if port not in common_in_range]
 
     threads = []
-    threads_count =  threads_calc(len(ports)+len(common_in_range))
+    threads_count =  threads_calc(len(ports)+len(common_in_range), args.max_threads)
 
     chunk_size = int((len(ports)+len(common_in_range))/threads_count)
 
@@ -87,6 +94,7 @@ if __name__ == "__main__":
     parser.add_argument("-r", "--range", default=None, type=valid_range, help="Scan ports in the given range")
     parser.add_argument("-p", "--ports", default=None, type=int, nargs="+", help="Scan the given port list")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("-t","--max-threads", metavar="max_threads", default=100, type=int, help="Max number of threads to use during the scam")
 
     args = parser.parse_args()
 
@@ -108,3 +116,4 @@ if __name__ == "__main__":
         port_scan(ip)
 
     print(f"\nNumber of open ports: {len(open_ports)}")
+    print(f"Scan duration (in seconds): {(time.time()-start):.3f}")
