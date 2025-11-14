@@ -7,6 +7,7 @@ common_ports =  [20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 111, 123, 135, 137
 
 open_ports = []
 response_times = []
+banners = []
 lock = Lock()
 
 start = time.time()
@@ -53,6 +54,16 @@ def scan_port(ip, port, timeout):
     duration = time.time() - start
     return result, error, duration
 
+def grab_banner(ip, port, timeout):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect((ip, port))
+            banner = sock.recv(1024).decode(errors="ignore").strip()
+            return banner
+    except Exception:
+        return None
+
 def scan_range(parms, ports):
     for port in ports:
         open = False
@@ -71,8 +82,10 @@ def scan_range(parms, ports):
                 
         if open:
             print(f"[{port}]", end=" ", flush=True)
+            banner = grab_banner(parms.ip, port, parms.max_timeout)
             with lock:
                 open_ports.append(port)
+                banners.append(banner)
                 if scan_duration <= parms.ignore_above:
                     response_times.append(scan_duration)
                     response_times[:] = response_times[-10:]
@@ -139,6 +152,12 @@ if __name__ == "__main__":
         scan_ports(args, ports)
     else:
         scan_ports(args)
+
+    if banners:
+        banners_dict = dict(zip(open_ports, banners))
+        print("\n")
+        for key, value in banners_dict.items():
+            print(f"{key} --> {value}")
 
     print(f"\nNumber of open ports: {len(open_ports)}")
     print(f"Scan duration (in seconds): {(time.time()-start):.3f}")
