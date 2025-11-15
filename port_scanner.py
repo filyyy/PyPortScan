@@ -1,26 +1,36 @@
 import math, socket, sys, argparse, time, errno, string
 from threading import Thread, Lock
+from dataclasses import dataclass
 
 common_ports =  [20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 111, 123, 135, 137, 138, 139,
                 143, 161, 162, 179, 389, 443, 445, 465, 514, 515, 587, 631, 993, 995, 1080,
                 1433, 1521, 1723, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 9000]
 
+default_parms = {
+    "min_timeout": 0.5,
+    "max_timeout": 5.0,
+    "ignore_above": 3.0,
+    "max_threads": 100,
+    "no_banner_grab": False,
+    "verbose": False,
+}
+
 active_requests = {
     21: b"\r\n",
-    22: None,
     23: b"\r\n",
     25: b"EHLO test\r\n",
     80: b"HEAD / HTTP/1.0\r\n\r\n",
     110: b"USER test\r\n",
     143: b"a001 CAPABILITY\r\n",
-    443: None,
-    3306: None,
-    3389: None,
-    5900: None,
     8080: b"HEAD / HTTP/1.0\r\n\r\n",
     6379: b"PING\r\n",
-    27017: None,
 }
+
+@dataclass
+class scan_res:
+    result: int
+    error: int
+    duration: float
 
 
 open_ports = []
@@ -67,10 +77,10 @@ def scan_port(ip, port, timeout):
     start =  time.time()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
-        result = sock.connect_ex((ip, port))
-        error = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
-    duration = time.time() - start
-    return result, error, duration
+        res = sock.connect_ex((ip, port))
+        err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+    dur = time.time() - start
+    return scan_res(result=res, error=err, duration=dur)
 
 def grab_banner(ip, port, timeout):
     try:
@@ -89,36 +99,38 @@ def scan_range(parms, ports):
         is_open = False
         banner = None
         scan_duration = None
-        timeout = get_timeout(parms.min_timeout, parms.max_timeout)
-        result, error, duration = scan_port(parms.ip, port, timeout)
-        if result == 0:
+        timeout = get_timeout(parms["min_timeout"], parms["max_timeout"])
+        scan = scan_port(parms["ip"], port, timeout)
+        if scan.result == 0:
             is_open = True
-            scan_duration = duration
+            scan_duration = scan.duration
             
-        elif error == errno.ETIMEDOUT:
-            retry_result, _, retry_duration = scan_port(parms.ip, port, parms.max_timeout)
-            if retry_result == 0:
+        elif scan.error == errno.ETIMEDOUT:
+            retry_scan = scan_port(parms["ip"], port, parms["max_timeout"])
+            if retry_scan.result == 0:
                 is_open = True
-                scan_duration = retry_duration
+                scan_duration = retry_scan.duration
                 
         if is_open:
             print(f"[{port}]", end=" ", flush=True)
-            if not parms.no_banner_grab:
-                banner = grab_banner(parms.ip, port, parms.max_timeout)
+            if not parms["no_banner_grab"]:
+                banner = grab_banner(parms["ip"], port, parms["max_timeout"])
             with lock:
                 open_ports.append(port)
                 if banner:
                     banners.append(banner)
-                if scan_duration <= parms.ignore_above:
+                if scan_duration <= parms["ignore_above"]:
                     response_times.append(scan_duration)
                     response_times[:] = response_times[-10:]
 
-def scan_ports(parms, ports=common_ports):
-    if parms.verbose:
+def scan_ports(ip, ports=common_ports, parms=default_parms):
+    if parms != default_parms:
+        parms = {**default_parms, **parms}
+    if parms["verbose"]:
         keys = ["ip", "min_timeout", "max_timeout", "ignore_above", "max_threads"]
         print("----parameters----")
         for key in keys:
-            print(f"{key} = {vars(parms)[key]}")
+            print(f"{key} = {parms[key]}")
         print("")
 
     print("Open ports: ", end="", flush=True)
@@ -127,7 +139,7 @@ def scan_ports(parms, ports=common_ports):
     ports = [port for port in ports if port not in common_in_range]
 
     threads = []
-    threads_count =  threads_calc(len(ports)+len(common_in_range), parms.max_threads)
+    threads_count =  threads_calc(len(ports)+len(common_in_range), parms["max_threads"])
 
     chunk_size = int((len(ports)+len(common_in_range))/threads_count)
 
@@ -162,20 +174,19 @@ if __name__ == "__main__":
     parser.add_argument("--ignore-responses-above", default=3.0, type=float, dest="ignore_above", help="Ignore responses times above a certain value when calculating the avarage response time")
     parser.add_argument("--no-banner-grabbing", dest="no_banner_grab", default=False, action="store_true", help="Disable banner grabbing")
 
-    args = parser.parse_args()
+    args = vars(parser.parse_args())
 
-    if args.range:
-        for port in args.range:
+    if args["range"]:
+        for port in args["range"]:
             ports.append(port)
-    if args.ports:
-        for port in valid_ports(args.ports):
+    if args["ports"]:
+        for port in valid_ports(args["ports"]):
             if port not in ports:
                 ports.append(port)
+            
+    ip = args["ip"]
 
-    if ports:
-        scan_ports(args, ports)
-    else:
-        scan_ports(args)
+    scan_ports(ip, ports if ports else common_ports, args)
 
     if banners:
         banners_dict = dict(sorted(zip(open_ports, banners)))
