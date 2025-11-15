@@ -1,3 +1,10 @@
+"""
+PyPortScan
+Author: filyyy (https://github.com/filyyy)
+Description: A simple multi-threaded TCP port scanner with banner grabbing and dynamic timeouts
+License: MIT
+"""
+
 import math, socket, sys, argparse, time, errno, string
 from threading import Thread, Lock
 from dataclasses import dataclass
@@ -15,6 +22,7 @@ default_parms = {
     "verbose": False,
 }
 
+# request strings for ports that require an active query to return a banner
 active_requests = {
     21: b"\r\n",
     23: b"\r\n",
@@ -27,11 +35,10 @@ active_requests = {
 }
 
 @dataclass
-class scan_res:
+class scan_results:
     result: int
     error: int
     duration: float
-
 
 open_ports = []
 response_times = []
@@ -41,6 +48,10 @@ lock = Lock()
 start = time.time()
 
 def valid_ports(ports_list):
+    """
+    Validates the list of ports passed through the -p flag and
+    returns the validated list
+    """
     valids = []
     for port in ports_list:
         if port < 1 or port > 65535:
@@ -50,6 +61,10 @@ def valid_ports(ports_list):
     return valids
 
 def valid_range(ports_range):
+    """
+    Validates the range of ports passed through the -r flag and
+    returns the validated range as a list
+    """
     valids = []
     try:
         start, stop = map(int, ports_range.split("-"))
@@ -63,26 +78,47 @@ def valid_range(ports_range):
         valids.append(port)
     return valids
 
-
 def threads_calc(length, max_threads):
+    """
+    Calculates the number of threads to use according to the number of ports
+    and returns it
+    The number of threads is defined with the square root of the number of ports
+    to prevent it from rising too quickly
+    """
     return int(min(max(1, math.sqrt(length)), max_threads))
 
 def get_timeout(min_timeout, max_timeout):
+    """
+    Calculates the timeout based on the
+    average latency of the last 10 scans
+    """
     if not response_times:
         return 1.0
     avg = sum(response_times)/len(response_times)
     return max(min_timeout, min(avg*2.0, max_timeout))
 
 def scan_port(ip, port, timeout):
+    """
+    Attempts to connect to a port to verify if it is open and retry with the maximum
+    timeout if a timeout occurs to prevent false negatives for slow ports
+    Returns the result (0 if port is open), any errors and the
+    duration of the scan as a dataclass
+    """
     start =  time.time()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         res = sock.connect_ex((ip, port))
         err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
     dur = time.time() - start
-    return scan_res(result=res, error=err, duration=dur)
+    return scan_results(result=res, error=err, duration=dur)
 
 def grab_banner(ip, port, timeout):
+    """
+    Attempts to capture the banner sent by the service running
+    on a port and returns it in a readable format
+    Uses the maximum timeout to allow the service enough time
+    to respond, reducing the chance of false negatives
+    """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
@@ -95,16 +131,24 @@ def grab_banner(ip, port, timeout):
         return None
 
 def scan_range(parms, ports):
+    """
+    Iterates over a chunk of the ports list, scans each port,
+    and attempts to grab its banner if the port is open
+    """
     for port in ports:
         is_open = False
         banner = None
         scan_duration = None
+
         timeout = get_timeout(parms["min_timeout"], parms["max_timeout"])
+        # run the scan
         scan = scan_port(parms["ip"], port, timeout)
+
         if scan.result == 0:
             is_open = True
             scan_duration = scan.duration
             
+        # retry the scan with the maximum timeout if the first attempt fails for a timeout
         elif scan.error == errno.ETIMEDOUT:
             retry_scan = scan_port(parms["ip"], port, parms["max_timeout"])
             if retry_scan.result == 0:
@@ -115,26 +159,34 @@ def scan_range(parms, ports):
             print(f"[\033[32m{port}\033[0m]", end=" ", flush=True)
             if not parms["no_banner_grab"]:
                 banner = grab_banner(parms["ip"], port, parms["max_timeout"])
+            # use Lock to prevent multiple threads to access the lists simultaneously
             with lock:
                 open_ports.append(port)
                 if banner:
                     banners.append(banner)
                 if scan_duration <= parms["ignore_above"]:
                     response_times.append(scan_duration)
+                    # sliding window that only keeps the last 10 records
                     response_times[:] = response_times[-10:]
 
 def scan_ports(ip, ports=None, parms=None):
+    """
+    Divides the list of ports into chunks and feeds them to multiple threads
+    to scan them faster
+    It gives priority to common ports
+    """
     if ports == None:
         ports = common_ports
     if parms == None:
         parms = default_parms.copy()
     else:
         parms = {**default_parms, **parms}
+
     if parms["verbose"]:
         keys = ["ip", "min_timeout", "max_timeout", "ignore_above", "max_threads"]
-        print("----parameters----")
+        print("\033[91m====| Parameters |=====\033[0m")
         for key in keys:
-            print(f"{key} = {parms[key]}")
+            print(f"\033[95m{key}\033[0m = {parms[key]}")
         print("")
 
     print("\033[1;34mOpen ports: \033[0m", end="", flush=True)
@@ -147,6 +199,7 @@ def scan_ports(ip, ports=None, parms=None):
 
     chunk_size = int((len(ports)+len(common_in_range))/threads_count)
 
+    # priority to common ports in the list
     for ports_chunk in list(common_in_range[i:i+chunk_size] for i in range(0,len(common_in_range),chunk_size)):
         t = Thread(target=scan_range, args=(parms, ports_chunk))
         threads.append(t)
@@ -156,6 +209,7 @@ def scan_ports(ip, ports=None, parms=None):
     
     threads.clear()
 
+    # assign each chunk of ports to a thread and start it
     for ports_chunk in list(ports[i:i+chunk_size] for i in range(0,len(ports),chunk_size)):
         t = Thread(target=scan_range, args=(parms, ports_chunk))
         threads.append(t)
@@ -167,6 +221,7 @@ if __name__ == "__main__":
 
     ports = []
 
+    # parse arguments from CLI
     parser = argparse.ArgumentParser(prog="Port Scanner", description="Simple python TCP port scanner")
     parser.add_argument("ip")
     parser.add_argument("-r", "--range", default=None, type=valid_range, help="Scan ports in the given range")
@@ -175,7 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-threads", default=100, type=int, dest="max_threads", help="Max number of threads to use during the scan")
     parser.add_argument("--min-timeout", default=0.5, type=float, dest="min_timeout", help="Minimum timeout for each port")
     parser.add_argument("--max-timeout", default=5.0, type=float, dest="max_timeout", help="Maximum timeout for each port")
-    parser.add_argument("--ignore-responses-above", default=3.0, type=float, dest="ignore_above", help="Ignore responses times above a certain value when calculating the avarage response time")
+    parser.add_argument("--ignore-responses-above", default=3.0, type=float, dest="ignore_above", help="Ignore response times above a certain value when calculating the average response time")
     parser.add_argument("--no-banner-grabbing", dest="no_banner_grab", default=False, action="store_true", help="Disable banner grabbing")
 
     args = vars(parser.parse_args())
@@ -185,7 +240,7 @@ if __name__ == "__main__":
             ports.append(port)
     if args["ports"]:
         for port in valid_ports(args["ports"]):
-            if port not in ports:
+            if port not in ports: # prevents duplicates
                 ports.append(port)
             
     ip = args["ip"]
@@ -198,5 +253,5 @@ if __name__ == "__main__":
         for port, banner in banners_dict.items():
             print(f"[\033[1;32m{port}\033[0m] ==> \033[93m{banner}\033[0m\n")
 
-    print(f"\n\033[94mNumber of open ports:\033[0m {len(open_ports)}")
+    print(f"\033[94mNumber of open ports:\033[0m {len(open_ports)}")
     print(f"\033[94mScan duration:\033[0m {(time.time()-start):.3f}s")
