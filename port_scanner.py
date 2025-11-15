@@ -1,9 +1,27 @@
-import math, socket, sys, argparse, time, errno
+import math, socket, sys, argparse, time, errno, string
 from threading import Thread, Lock
 
 common_ports =  [20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 111, 123, 135, 137, 138, 139,
                 143, 161, 162, 179, 389, 443, 445, 465, 514, 515, 587, 631, 993, 995, 1080,
                 1433, 1521, 1723, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 9000]
+
+active_requests = {
+    21: b"\r\n",
+    22: None,
+    23: b"\r\n",
+    25: b"EHLO test\r\n",
+    80: b"HEAD / HTTP/1.0\r\n\r\n",
+    110: b"USER test\r\n",
+    143: b"a001 CAPABILITY\r\n",
+    443: None,
+    3306: None,
+    3389: None,
+    5900: None,
+    8080: b"HEAD / HTTP/1.0\r\n\r\n",
+    6379: b"PING\r\n",
+    27017: None,
+}
+
 
 open_ports = []
 response_times = []
@@ -59,33 +77,38 @@ def grab_banner(ip, port, timeout):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
             sock.connect((ip, port))
-            banner = sock.recv(1024).decode(errors="ignore").strip()
+            if port in active_requests:
+                sock.sendall(active_requests[port])
+            banner = "".join(c for c in sock.recv(1024).decode(errors="ignore") if c in string.printable).strip()
             return banner
     except Exception:
         return None
 
 def scan_range(parms, ports):
     for port in ports:
-        open = False
+        is_open = False
+        banner = None
         scan_duration = None
         timeout = get_timeout(parms.min_timeout, parms.max_timeout)
         result, error, duration = scan_port(parms.ip, port, timeout)
         if result == 0:
-            open = True
+            is_open = True
             scan_duration = duration
             
         elif error == errno.ETIMEDOUT:
             retry_result, _, retry_duration = scan_port(parms.ip, port, parms.max_timeout)
             if retry_result == 0:
-                open = True
+                is_open = True
                 scan_duration = retry_duration
                 
-        if open:
+        if is_open:
             print(f"[{port}]", end=" ", flush=True)
-            banner = grab_banner(parms.ip, port, parms.max_timeout)
+            if not parms.no_banner_grab:
+                banner = grab_banner(parms.ip, port, parms.max_timeout)
             with lock:
                 open_ports.append(port)
-                banners.append(banner)
+                if banner:
+                    banners.append(banner)
                 if scan_duration <= parms.ignore_above:
                     response_times.append(scan_duration)
                     response_times[:] = response_times[-10:]
@@ -137,6 +160,7 @@ if __name__ == "__main__":
     parser.add_argument("--min-timeout", default=0.5, type=float, dest="min_timeout", help="Minimum timeout for each port")
     parser.add_argument("--max-timeout", default=5.0, type=float, dest="max_timeout", help="Maximum timeout for each port")
     parser.add_argument("--ignore-responses-above", default=3.0, type=float, dest="ignore_above", help="Ignore responses times above a certain value when calculating the avarage response time")
+    parser.add_argument("--no-banner-grabbing", dest="no_banner_grab", default=False, action="store_true", help="Disable banner grabbing")
 
     args = parser.parse_args()
 
@@ -154,10 +178,10 @@ if __name__ == "__main__":
         scan_ports(args)
 
     if banners:
-        banners_dict = dict(zip(open_ports, banners))
+        banners_dict = dict(sorted(zip(open_ports, banners)))
         print("\n")
-        for key, value in banners_dict.items():
-            print(f"{key} --> {value}")
+        for port, banner in banners_dict.items():
+            print(f"[{port}] ---> {banner}\n")
 
     print(f"\nNumber of open ports: {len(open_ports)}")
     print(f"Scan duration (in seconds): {(time.time()-start):.3f}")
