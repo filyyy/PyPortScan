@@ -112,7 +112,7 @@ def scan_range(parms, ports):
                 scan_duration = retry_scan.duration
                 
         if is_open:
-            print(f"[{port}]", end=" ", flush=True)
+            print(f"[\033[32m{port}\033[0m]", end=" ", flush=True)
             if not parms["no_banner_grab"]:
                 banner = grab_banner(parms["ip"], port, parms["max_timeout"])
             with lock:
@@ -123,8 +123,12 @@ def scan_range(parms, ports):
                     response_times.append(scan_duration)
                     response_times[:] = response_times[-10:]
 
-def scan_ports(ip, ports=common_ports, parms=default_parms):
-    if parms != default_parms:
+def scan_ports(ip, ports=None, parms=None):
+    if ports == None:
+        ports = common_ports
+    if parms == None:
+        parms = default_parms.copy()
+    else:
         parms = {**default_parms, **parms}
     if parms["verbose"]:
         keys = ["ip", "min_timeout", "max_timeout", "ignore_above", "max_threads"]
@@ -133,7 +137,7 @@ def scan_ports(ip, ports=common_ports, parms=default_parms):
             print(f"{key} = {parms[key]}")
         print("")
 
-    print("Open ports: ", end="", flush=True)
+    print("\033[1;34mOpen ports: \033[0m", end="", flush=True)
 
     common_in_range = [common for common in common_ports if common in ports]
     ports = [port for port in ports if port not in common_in_range]
@@ -168,7 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("-r", "--range", default=None, type=valid_range, help="Scan ports in the given range")
     parser.add_argument("-p", "--ports", default=None, type=int, nargs="+", help="Scan the given port list")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("--max-threads", default=100, type=int, dest="max_threads", help="Max number of threads to use during the scam")
+    parser.add_argument("--max-threads", default=100, type=int, dest="max_threads", help="Max number of threads to use during the scan")
     parser.add_argument("--min-timeout", default=0.5, type=float, dest="min_timeout", help="Minimum timeout for each port")
     parser.add_argument("--max-timeout", default=5.0, type=float, dest="max_timeout", help="Maximum timeout for each port")
     parser.add_argument("--ignore-responses-above", default=3.0, type=float, dest="ignore_above", help="Ignore responses times above a certain value when calculating the avarage response time")
@@ -192,7 +196,7 @@ if __name__ == "__main__":
         banners_dict = dict(sorted(zip(open_ports, banners)))
         print("\n")
         for port, banner in banners_dict.items():
-            print(f"[{port}] ---> {banner}\n")
+            print(f"[\033[1;32m{port}\033[0m] ==> \033[93m{banner}\033[0m\n")
 
-    print(f"\nNumber of open ports: {len(open_ports)}")
-    print(f"Scan duration (in seconds): {(time.time()-start):.3f}")
+    print(f"\n\033[94mNumber of open ports:\033[0m {len(open_ports)}")
+    print(f"\033[94mScan duration:\033[0m {(time.time()-start):.3f}s")
