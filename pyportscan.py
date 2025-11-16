@@ -1,7 +1,7 @@
 """
 PyPortScan
 Author: filyyy (https://github.com/filyyy)
-Description: A simple multi-threaded TCP port scanner with banner grabbing and dynamic timeouts
+Description: Simple multi-threaded TCP port scanner with banner grabbing and dynamic timeouts
 License: MIT
 """
 
